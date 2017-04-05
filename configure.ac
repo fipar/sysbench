@@ -1,7 +1,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.57)
-AC_INIT([sysbench],[0.5],[sysbench-developers@lists.launchpad.net])
+AC_INIT([sysbench],[1.0],[akopytov@gmail.com])
 AC_CONFIG_AUX_DIR([config])
 # Setting CFLAGS here prevents AC_CANONICAL_TARGET from injecting them
 SAVE_CFLAGS=${CFLAGS}
@@ -69,7 +69,6 @@ then
   CFLAGS="-ggdb3 ${CFLAGS}"
   DEBUG_CFLAGS="-O0"
   OPTIMIZE_CFLAGS="-O2"
-  GCOV_CFLAGS="-O0 --coverage"
 fi
 if test "$SUNCC" = "yes"
 then
@@ -91,7 +90,6 @@ then
   CFLAGS="-g -mt ${IS_64} ${MEMALIGN_FLAGS} ${CFLAGS}"
   DEBUG_CFLAGS="-xO0"
   OPTIMIZE_CFLAGS="-xO2 -xlibmil -xdepend -Xa -mt -xstrconst"
-# TODO: Set flags for Gcov-enabled builds, if supported by Sun Studio
 fi
 
 
@@ -101,6 +99,13 @@ AC_ARG_WITH([mysql],
             [ac_cv_use_mysql=$withval], [ac_cv_use_mysql=yes]
 )
 AC_CACHE_CHECK([whether to compile with MySQL support], [ac_cv_use_mysql], [ac_cv_use_mysql=no])
+
+# Check if we should compile with MongoDB support
+AC_ARG_WITH([mongodb], 
+            AS_HELP_STRING([--with-mongodb],[compile with MongoDB support (default is enabled)]),
+            [ac_cv_use_mongodb=$withval], [ac_cv_use_mongodb=yes]
+)
+AC_CACHE_CHECK([wether to compile with MongoDB support], [ac_cv_use_mongodb], [ac_cv_use_mongodb=no])
 
 # Check if we should compile with Drizzle support
 AC_ARG_WITH([drizzle], 
@@ -184,6 +189,11 @@ if test x$ac_cv_use_mysql != xno; then
 fi
 AM_CONDITIONAL(USE_MYSQL, test x$ac_cv_use_mysql != xno)
 
+if test x$ac_cv_use_mongodb != xno; then
+   AC_DEFINE(USE_MONGODB,1,[Define to 1 if you want to compile with MongoDB support])
+fi
+AM_CONDITIONAL(USE_MONGODB, test x$ac_cv_use_mongodb != xno)
+
 if test x$ac_cv_use_drizzle != xno; then
   AC_LIB_HAVE_LINKFLAGS(drizzle,,
     [#include <libdrizzle/drizzle.h>],
@@ -266,6 +276,13 @@ AC_C_INLINE
 AC_TYPE_OFF_T
 AC_TYPE_SIZE_T
 AC_HEADER_TIME
+AX_TLS([],
+  AC_MSG_ERROR([Thread-local storage is not suppored by the target platform!])
+)
+
+# Define HAVE_FUNC_ATTRIBUTE_FORMAT if compiler supports the
+# __attribute__((format...)) function attribute
+AX_GCC_FUNC_ATTRIBUTE(format)
 
 if test "$enable_largefile" = yes; then
     AC_SYS_LARGEFILE
@@ -297,8 +314,8 @@ alarm \
 directio \
 fdatasync \
 gettimeofday \
-lrand48 \
-drand48 \
+lrand48_r \
+rand_r \
 memalign \
 memset \
 mkstemp \
@@ -325,6 +342,14 @@ AC_ARG_WITH([debug],
        [Add debug code/turns off optimizations (yes|no) @<:@default=no@:>@])],
     [with_debug=$withval],
     [with_debug=no])
+if test "$with_debug" = "yes"
+then
+  # Debugging. No optimization.
+  CFLAGS="${DEBUG_CFLAGS} -DDEBUG ${CFLAGS}"
+else
+  # Optimized version. No debug
+  CFLAGS="${OPTIMIZE_CFLAGS} ${CFLAGS}"
+fi
 
 AC_ARG_ENABLE([profiling],
     [AS_HELP_STRING([--enable-profiling],
@@ -369,19 +394,6 @@ AC_ARG_ENABLE([go-crazy],
     [ac_warn_go_crazy="$enableval"],
     [ac_warn_go_crazy="no"])
 
-if test "$with_debug" = "yes"
-then
-  # Debugging. No optimization.
-  CFLAGS="${DEBUG_CFLAGS} -DDEBUG ${CFLAGS}"
-elif test "$ac_coverage" = "yes"
-then
-  # Gcov-enabled build. No optimization.
-  CFLAGS="${GCOV_CFLAGS} ${CFLAGS}"
-else
-  # Optimized version. No debug
-  CFLAGS="${OPTIMIZE_CFLAGS} ${CFLAGS}"
-fi
-
 if test "$GCC" = "yes"
 then
   if test "$ac_warn_fail" = "yes"
@@ -401,7 +413,7 @@ then
 
   if test "$ac_coverage" = "yes"
   then
-    GPROF_COVERAGE="--coverage"
+    GPROF_COVERAGE="-fprofile-arcs -ftest-coverage"
   else
     GPROF_COVERAGE=" "
   fi
@@ -426,7 +438,7 @@ then
     W_CRAZY="-Wshadow -Wconversion"
   fi
 
-  CC_WARNINGS="${BASE_WARNINGS} ${W_PEDANTIC} ${W_UNREACHABLE} ${W_CRAZY}"
+  CC_WARNINGS="${BASE_WARNINGS} ${W_PEDANTIC} ${W_UNREACHABLE} ${GPROF_PROFILING} ${GPROF_COVERAGE} ${W_CRAZY}"
 
   NO_REDUNDANT_DECLS="-Wno-redundant-decls"
   CPPFLAGS="${CPPFLAGS}"
@@ -436,11 +448,14 @@ then
   CC_WARNINGS="-v -errtags=yes -errwarn=%all -erroff=E_INTEGER_OVERFLOW_DETECTED"
 fi
 
-AM_CFLAGS="${CC_WARNINGS} ${GPROF_PROFILING} ${GPROF_COVERAGE} ${AM_CFLAGS} ${PTHREAD_CFLAGS}"
+MONGO_C_DRIVER_LDFLAGS="-L/usr/local/lib -lsasl2 -lssl -lcrypto -lrt -lmongoc-1.0 -lbson-1.0"
+MONGO_C_DRIVER_CFLAGS="-I/usr/local/include/libmongoc-1.0 -I/usr/local/include/libbson-1.0 $MONGO_C_DRIVER_LDFLAGS"
+
+AM_CFLAGS="${CC_WARNINGS} ${AM_CFLAGS} ${PTHREAD_CFLAGS} ${MONGO_C_DRIVER_CFLAGS}"
 
 AM_CPPFLAGS="${AM_CPPFLAGS} -I\$(top_srcdir)/sysbench"
 
-AM_LDFLAGS="$PTHREAD_LIBS"
+AM_LDFLAGS="$PTHREAD_LIBS ${MONGO_C_DRIVER_LDFLAGS}"
 
 AC_SUBST(AM_CFLAGS)
 AC_SUBST(AM_CPPFLAGS)
@@ -468,7 +483,5 @@ sysbench/tests/db/Makefile
 sysbench/scripting/Makefile
 sysbench/scripting/lua/Makefile
 sysbench/scripting/lua/src/Makefile
-tests/Makefile
-tests/include/config.sh
 ])
 AC_OUTPUT
